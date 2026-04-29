@@ -1,10 +1,10 @@
 # 需求文档：兆易创新 GD9Fx1GxF2A 并口 NAND Flash 与 Xilinx Kintex-7 驱动
 
-**文档版本**：1.3  
+**文档版本**：1.4  
 **编写日期**：2026-04-29  
 **状态**：需求记录（待评审与细化）
 
-**数据手册依据**：GigaDevice《**GD9Fx1GxF2A**》Datasheet（1 Gbit SLC 并口 NAND 系列文档；官网同系列单料号文件示例 **DS-00798-GD9FU1G8F2D-Rev1.1**，**Rev 与日期以官网下载为准**）。本文 **§3、§4.1** 中的电气与 AC/Performance 数值摘录自该手册 **§1 Features、§5 Array Organization、§7 Bus Operation、§8 Operation Description（含 §8.4 Reset）、§12.3 AC Timing Characteristics、§12.4 Performance Characteristics**。
+**数据手册依据**：GigaDevice《**GD9Fx1GxF2A**》Datasheet（1 Gbit SLC 并口 NAND 系列文档；官网同系列单料号文件示例 **DS-00798-GD9FU1G8F2D-Rev1.1**，**Rev 与日期以官网下载为准**）。本文 **§3、§3.1、§4.1** 中的电气、命令集、AC/Performance 数值摘录自该手册 **§1 Features、§5 Array Organization、§6 Command Set、§7 Bus Operation、§8 Operation Description（含 §8.4 Reset）、§12.3 AC Timing Characteristics、§12.4 Performance Characteristics**；状态位定义见 **Status Register Definitions** 章节（手册 PDF 约第 37 页）。
 
 ---
 
@@ -36,6 +36,55 @@
 | ECC | 手册 **Features** 写明 **4 bit / 512 bytes**（与 100K P/E、ECC 协同的可靠性表述一致）；控制器须按该要求连接或实现 ECC。 |
 | 可靠性 / 温度 | **P/E cycles with ECC：100K**；**Data retention：10 Years**；**Industrial (I)：-40 ℃～85 ℃**，**(J)：-40 ℃～105 ℃**（§1）。 |
 | 功能特性（可选需求） | **缓存读/编程**、**OTP**、**Chip Enable Don’t Care** 等（§1、§8）；是否在首版驱动中支持，见第 8 节待澄清项。 |
+
+### 3.1 全部操作命令列表与说明（§6 COMMAND SET）
+
+下表与数据手册 **§6 Command Set** 一致（列名：**Function / 1st / 2nd / 3rd / 4th / During busy**）。**“During busy = yes”** 表示器件在忙态时仍允许该命令（如 **70h** 读状态、**FFh** 复位）；**no** 表示须在就绪后发出。各命令的**完整地址周期数、数据周期、波形与 tR/tPROG/tBERS** 等以 **§8 Operation Description** 及 **§4.1** 为准。
+
+| Function（手册原文） | 1st | 2nd | 3rd | 4th | During busy | 说明（与 §8 对应，便于实现） |
+|----------------------|-----|-----|-----|-----|---------------|------------------------------|
+| Page read | 00H | 30H | — | — | no | **普通页读**：**00h** + **4 周期地址** + **30h**，将选中页载入数据寄存器后由 **RE#** 顺序读出（§8.1.1）；上电后首次可仅 **4 地址 + 30h**（§8.1.1）。 |
+| Read for copy-back | 00H | 35H | — | — | no | **Copy-Back 读**：**00h** + 源页地址 + **35h**，将整页数据移入片内缓冲，供后续 **85h…10h** 写目的页（§8.2.5）。 |
+| Random data output | 05H | E0H | — | — | no | **换列读**：在页数据已在寄存器、处于读空闲时，**05h** + 列地址 + **E0h** 改变下一输出列（§8.1.2）。 |
+| Cache read start | 31H | — | — | — | no | **缓存读**序列中的读缓存命令；须先完成一次普通读或读缓存流程，详见 §8.1.3。 |
+| Cache read random | 00H | 31H | — | — | no | **00h** 与 **31h** 组合的缓存读变体（§8.1.3），用于指定下一页等；与 **3Fh** 结束配合使用。 |
+| Cache read end | 3FH | — | — | — | no | **缓存读结束**：将最后一页拷入页寄存器（§8.1.3）。 |
+| Read id | 90H | — | — | — | no | **读 ID**：**90h** + 地址 **00h**，再 **4 次 RE#** 读出 MID/DID 等（§8.5.1）。 |
+| Read status register | 70H | — | — | — | yes | **读状态**：**70h** 后读 **I/O** 得状态寄存器；忙时可发；若在读流程中插入状态读，手册要求随后发 **00h** 再继续读数据（§8.6）。 |
+| Page program start / Cache program end | 80H | 10H | — | — | no | 手册将 **80h** 与 **10h** 合表为第二字节：实际序列为 **80h** + **4 周期地址** + 页数据 + **10h** 确认**普通页编程**；**缓存编程**中最后一页用 **10h** 结束整条缓存编程链（**15h** 为中间页，§8.2.4）。 |
+| Random data input | 85H | — | — | — | no | **随机数据输入（换列写）**：在 **80h** 已建立页编程序列后，**85h** + 新列地址再串行写入数据，可多次（§8.2.2）。 |
+| Copy back program | 85H | 10H | — | — | no | **Copy-Back 编程**：在 **00h–35h** 读入源页后，**85h** + 目的页地址 + 可选随机数据 + **10h** 启动编程（§8.2.5）。 |
+| Cache program start | 80H | 15H | — | — | no | **缓存编程**：**80h** + 地址 + 数据后，中间页用 **15h** 代替 **10h**；最后一页须用 **10h**（若仅用 **R/B#** 监视进度，§8.2.4）。 |
+| Block erase | 60H | D0H | — | — | no | **块擦除**：**60h** + **2 周期行地址**（列无效）+ **D0h** 确认；忙时仅 **70h、FFh** 合法（§8.3）。 |
+| Reset | FFH | — | — | — | yes | **软件复位**：写 **FFh**；**tRST** 见 §4.1.3b（§8.4）。 |
+| Page re-program | 8BH | 10H | — | — | no | **页重编程**：编程失败经状态确认后，**8Bh** + 目标页 **4 周期地址**，数据同则可直接 **10h**，不同则先写数据再 **10h**（§8.2.3）。 |
+| Read parameter page | ECH | — | — | — | no | **读 ONFI 参数页**：**ECh** 后读大量配置字节；可用 **05h–E0h** 随机读片段、**70h** 查忙；完成后主机发 **00h** 继续数据流（§8.5.3）。 |
+| Read unique ID | EDH | — | — | — | no | **读唯一 ID**：**EDh** 后读出 **UID** 及其按位取反副本；可用 **05h–E0h** 改输出位置；**70h** 可查完成（§8.5.2）。 |
+
+**与 §6 表头措辞的对应**：手册 **§6** 中 “**Page program start / Cache program end**” 一行表示 **80h** 为页编程（或缓存编程）**数据加载阶段入口**，**10h** 为**普通页编程确认**或**缓存编程链的最后一次确认**；**80h + 15h** 另起一行表示 **缓存编程中间确认**。实现时勿将 **§6** 两行合并理解为单次 **80h–10h** 无地址无数据。
+
+**ONFI 可选命令（未在 §6 主表单独列出）**：**§8.5.3** 参数页 **Optional commands supported** 等字段标称器件可能支持 **Read Status Enhanced、Get Features、Set Features** 等 ONFI 能力位；**具体 opcode 与是否实现须以手册 §8 全文及所选料号为准**。首版 K7 驱动可仅实现 **§6** 表中命令，扩展命令作为后续迭代项（见 §8 待澄清）。
+
+#### 3.1.1 读状态寄存器位定义（Status Register Definitions）
+
+读 **70h** 后 **I/O0～I/O7** 含义随当前操作类型变化。下表与手册 **Status Register Definitions** 一致（列：**Page Program / Block Erase / Cache Program / Read / Cache Read / Definition**）。
+
+| I/O | Page Program | Block Erase | Cache Program | Read | Cache Read | Definition（手册原文归纳） |
+|-----|--------------|-------------|---------------|------|------------|----------------------------|
+| 0 | Pass/Fail | Pass/Fail | Pass/Fail(N) | Not use | Not use | **N Page**：Pass : 0，Fail : 1 |
+| 1 | Not use | Not use | Pass/Fail(N-1) | Not use | Not use | **N-1 Page**：Pass : 0，Fail : 1 |
+| 2 | Not use | Not use | Not use | Not use | Not use | **“0”** |
+| 3 | Not use | Not use | Not use | Not use | Not use | Not use |
+| 4 | Not use | Not use | Not use | Not use | Not use | **0** |
+| 5 | Ready/Busy | Ready/Busy | Ready/Busy | Ready/Busy | Ready/Busy | **P/E/R controller**：Busy : 0，Ready : 1 |
+| 6 | Ready/Busy | Ready/Busy | Ready/Busy | Ready/Busy | Ready/Busy | **Data Cache**：Busy : 0，Ready : 1 |
+| 7 | Write Protect | Write Protect | Write Protect | Write Protect | Write Protect | **Protected:0，Not Protected:1** |
+
+**Notes（手册）**：  
+1. **I/O0** 仅在编程与擦除时有效；**Cache Program** 时仅当 **I/O5=1** 时有效。  
+2. **I/O1** 仅在 **Cache Program** 时有效；在第二次 **15h** 或 **10h** 传入该序列前无效。  
+3. **I/O5=1**：无阵列操作在进行；**=0**：有命令正在处理（**I/O6** 也可能为 0）或阵列操作进行中。  
+4. **缓存操作**时：**I/O6** 表示是否可再接受命令，**I/O5** 表示操作是否完成。
 
 ---
 
@@ -236,7 +285,8 @@ sequenceDiagram
    - 与上层系统对接方式需实现其一或组合（在详细设计中冻结）：  
      - **AXI4-Lite** 寄存器控制 + **AXI-Stream / AXI4** 数据搬运；或  
      - **FIFO + 简单本地总线**；或  
-     - **MicroBlaze** 软件驱动 + EMIO/自定义外设。
+     - **MicroBlaze** 软件驱动 + EMIO/自定义外设。  
+   - 命令译码须覆盖 **§3.1** 中项目所需子集，并与 **During busy** 列一致地处理 **70h / FFh** 等例外。
 
 ### 5.2 可选增强（按优先级另列）
 
@@ -280,7 +330,8 @@ sequenceDiagram
 6. **是否首版即支持多平面/缓存模式/ONFi 参数页** 等高级特性。  
 7. **数据手册 Rev**：若升级 **DS-00798-*** 或封面 **Rev**，须对 **§12.3、§12.4、§8** 做勘误对照并更新本需求文档版本号。  
 8. **EDO 模式**：是否实现 **tRC < 30 ns** 的 EDO 读（§7.4）；默认可实现 **tRC ≥ 手册 Min** 的标准读。  
-9. **复位策略**：上电后是否**固定发送 FFh**、错误恢复是否**仅依赖 FFh**、是否与 FPGA 全局复位引脚做联合时序（硬件上电斜率、**R/B#** 首次有效时刻）。
+9. **复位策略**：上电后是否**固定发送 FFh**、错误恢复是否**仅依赖 FFh**、是否与 FPGA 全局复位引脚做联合时序（硬件上电斜率、**R/B#** 首次有效时刻）。  
+10. **命令实现范围**：是否首版即实现 **§3.1 §6 表内全部命令**；**Read Status Enhanced / Get Features / Set Features** 等 ONFI 可选能力是否实现及对应 opcode（见 §3.1 末段）。
 
 ---
 
@@ -302,3 +353,4 @@ sequenceDiagram
 | 1.1 | 2026-04-29 | 补充读/写总线时序（tRC、tWC 等）、页编程与块擦除耗时（tPROG、tBERS）及操作流程级时序说明与验证要求 |
 | 1.2 | 2026-04-29 | 按《GD9Fx1GxF2A》数据手册 §12.3/§12.4 填入完整 AC 与 Performance 表；§3、§4.1 与 §8/§1 对齐并补充官网手册引用 |
 | 1.3 | 2026-04-29 | 增加 §8.4 复位（FFh）时序：命令锁存、tRST、tWB、忙态合法命令；§5.1 初始化与 §4.1.5 验证要求 |
+| 1.4 | 2026-04-29 | 增加 §3.1：§6 全部命令表 + 各命令与 §8 对应说明；§3.1.1 状态寄存器位定义与手册 Notes |
