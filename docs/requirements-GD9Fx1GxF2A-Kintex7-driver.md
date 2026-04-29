@@ -1,8 +1,10 @@
 # 需求文档：兆易创新 GD9Fx1GxF2A 并口 NAND Flash 与 Xilinx Kintex-7 驱动
 
-**文档版本**：1.1  
+**文档版本**：1.2  
 **编写日期**：2026-04-29  
 **状态**：需求记录（待评审与细化）
+
+**数据手册依据**：GigaDevice《**GD9Fx1GxF2A**》Datasheet（1 Gbit SLC 并口 NAND 系列文档；官网同系列单料号文件示例 **DS-00798-GD9FU1G8F2D-Rev1.1**，**Rev 与日期以官网下载为准**）。本文 **§3、§4.1** 中的电气与 AC/Performance 数值摘录自该手册 **§1 Features、§5 Array Organization、§12.3 AC Timing Characteristics、§12.4 Performance Characteristics、§8 Operation Description**。
 
 ---
 
@@ -22,15 +24,18 @@
 
 ## 3. 器件与协议层面的需求摘要
 
-以下内容综合公开资料与系列说明，**精确时序、命令集细节、坏块策略、ECC 位宽等须以官方数据手册为准**（建议引用 GigaDevice 发布的 **GD9Fx1GxF2A** 系列 Datasheet）。
+以下内容与 **《GD9Fx1GxF2A》数据手册** 一致处直接按手册表述；其余（如具体订货后缀、封装料号）仍以 BOM 为准。
 
-| 项目 | 需求描述 |
-|------|----------|
-| 容量与组织 | 典型为 **1 Gbit**，常见组织为 **128M × 8**（x8 总线）；系列说明中常见 **2K + 64 B** 或 **2K + 128 B** 页结构（含备用区），块大小需对照具体型号数据手册。 |
-| 接口类型 | **异步并口 NAND**（地址/命令/数据复用 I/O），兼容业界常用的 **ONFi** 类时序与命令习惯（具体 ONFi 版本以手册为准）。 |
-| 电气 | 子系列分 **3.0 V 档** 与 **1.8 V 档**；FPGA Bank 电压、I/O 标准（如 LVCMOS33 / LVCMOS18）必须与所选料号一致。 |
-| 可靠性指标（系列级） | 典型 **100k** 次编程/擦除周期、**10 年**级数据保留（工业温区常见 **-40 ℃～+85 ℃**，以所选料号为准）。 |
-| 功能特性（可选需求） | 系列支持 **缓存读/编程**、**OTP/UID/阵列保护** 等；是否在首版驱动中支持，见第 8 节待澄清项。 |
+| 项目 | 需求描述（数据手册出处） |
+|------|--------------------------|
+| 容量与组织 | **1 Gbit**；x8 时 **Page：2K + 128 Byte**，**Block：128K + 8K Byte**；手册概述中一页编程按 **2176 Byte**（含备用区）表述（§2 General Description）。有效块数手册 **Features** 给出 **Min 1004 / Max 1024 blocks**（以所选温度/料号为准）。 |
+| 接口类型 | **异步并口 NAND**，**ONFI 1.0 Compatible**（§1 Features）。 |
+| 电气 | **GD9FS**：VCC/VCCQ **1.7 V～1.95 V**；**GD9FU**：**2.7 V～3.6 V**（§1）。FPGA Bank 与 I/O 标准须与所选子系列一致。 |
+| 顺序访问 / 周期 | **Random Read Time (tR)：25 μs Max**；**Sequential Access Time**：**3.3 V 器件 Min 25 ns**，**1.8 V 器件 Min 45 ns**（§1，与 §12.3 中 **tRC/tWC** 最小值对应）。 |
+| 编程与擦除（典型） | **Page Program (tPROG)：300 μs Typ**；**Block Erase (tBERS)：3 ms Typ**（§1；Max 见 §4.1.3 / §12.4）。 |
+| ECC | 手册 **Features** 写明 **4 bit / 512 bytes**（与 100K P/E、ECC 协同的可靠性表述一致）；控制器须按该要求连接或实现 ECC。 |
+| 可靠性 / 温度 | **P/E cycles with ECC：100K**；**Data retention：10 Years**；**Industrial (I)：-40 ℃～85 ℃**，**(J)：-40 ℃～105 ℃**（§1）。 |
+| 功能特性（可选需求） | **缓存读/编程**、**OTP**、**Chip Enable Don’t Care** 等（§1、§8）；是否在首版驱动中支持，见第 8 节待澄清项。 |
 
 ---
 
@@ -43,7 +48,9 @@
 
 ### 4.1 读、写、擦除时序需求
 
-本节规定控制器在 **异步并口** 模式下须满足的**总线周期时序**与**阵列操作耗时**，用于 RTL 状态机、超时计数器及 XDC 输入/输出延时的设计依据。**各参数的最小值/最大值以所选料号官方数据手册的 AC Timing / Performance 表为准**；下表为 **GD9Fx1GxF2A** 系列公开资料中常见的**典型量级**（不同电压档 `U`/`S`、温度与工艺角可能不同）。
+本节数值**直接对应《GD9Fx1GxF2A》数据手册 §12.3、§12.4**（异步模式）。设计须同时满足 **§7 Bus Operation** 各图中标出的 **tCLS、tWC、tRC、…** 与下表；若手册 Rev 更新，以最新版 **§12.3 / §12.4** 为准做差异对照。
+
+**手册对读模式的补充说明（§7.4 / 图 11_b）**：若主机顺序访问周期 **tRC < 30 ns**，数据可在 **RE#** 下一下降沿以 **EDO（Extended Data Output）** 方式锁存；否则按默认数据输出时序设计。
 
 #### 4.1.1 相关信号（与波形相关）
 
@@ -57,42 +64,84 @@
 | `R/B#` | 输出（开漏） | 忙为低；控制器须 **tBERS / tPROG** 量级等待或轮询状态寄存器。 |
 | `WP#`（若有） | 输入 | 写保护策略见硬件设计。 |
 
-#### 4.1.2 总线周期类 AC 时序（命令 / 地址 / 读数据）
+#### 4.1.2 总线周期类 AC 时序（§12.3 AC Timing Characteristics）
 
-以下名称与 ONFi / 常见 NAND 数据手册一致；除 **tRC / tWC** 外，**tCLS、tALS、tDS、tDH、tCLH、tALH、tRP、tREH、RE# 高电平宽度** 等须全部满足手册 **AC Characteristics** 表（含最小、最大列）。
+下表与手册表头一致：**3.3 V** 列为 **VCC 2.7 V～3.6 V（GD9FU）**；**1.8 V** 列为 **VCC 1.7 V～1.95 V（GD9FS）**。表中 “—” 表示该列在手册中为空白（仅约束 Min 或仅约束 Max）。
 
-| 参数 | 含义 | 需求说明（设计须满足） |
-|------|------|------------------------|
-| **tWC** | `WE#` 写周期时间 | 连续命令/地址/数据写入时，相邻有效 `WE#` 周期 ≥ 手册 **tWC min**；系列资料常见标称约 **25 ns～45 ns**（**3.0 V 档**与 **1.8 V 档**可能不同，**1.8 V 档往往要求更长周期**）。 |
-| **tRC** | `RE#` 读周期时间 | 从阵列或状态寄存器读字节时，相邻 `RE#` 有效周期 ≥ 手册 **tRC min**；系列资料常见与 **tWC** 同量级（约 **25 ns～45 ns**，以电压档与手册为准）。 |
-| 建立/保持 | `CLE`/`ALE` 相对 `WE#`、数据相对 `WE#` | 满足 **tCLS、tALS、tDS、tDH、…** 等，避免亚稳或误锁存。 |
+| Parameter | Symbol | 3.3 V Min (ns) | 3.3 V Max (ns) | 1.8 V Min (ns) | 1.8 V Max (ns) |
+|-----------|--------|----------------|----------------|----------------|----------------|
+| CE# setup time | tCS | 15 | — | 15 | — |
+| CE# hold time | tCH | 5 | — | 5 | — |
+| CLE setup time | tCLS | 12 | — | 12 | — |
+| CLE hold time | tCLH | 5 | — | 5 | — |
+| ALE setup time | tALS | 12 | — | 12 | — |
+| ALE hold time | tALH | 5 | — | 5 | — |
+| Data setup time | tDS | 12 | — | 12 | — |
+| Data hold time | tDH | 5 | — | 5 | — |
+| Write cycle time | tWC | 25 | — | 45 | — |
+| WE# pulse width | tWP | 12 | — | 22 | — |
+| WE# high hold time | tWH | 10 | — | 15 | — |
+| Address to data loading time | tADL | 70 | — | 70 | — |
+| WE# high to busy | tWB | — | 100 | — | 100 |
+| Ready to WE# low | tRW | 20 | — | 20 | — |
+| Ready to RE# low | tRR | 20 | — | 20 | — |
+| CLE to RE# delay | tCLR | 10 | — | 10 | — |
+| ALE to RE# delay | tAR | 10 | — | 10 | — |
+| Read cycle time | tRC | 25 | — | 45 | — |
+| RE# pulse width | tRP | 12 | — | 22 | — |
+| RE# high hold time | tREH | 10 | — | 15 | — |
+| RE# access time | tREA | — | 20 | — | 30 |
+| CE# access time | tCEA | — | 25 | — | 45 |
+| RE# high to output Hi-Z | tRHZ | — | 100 | — | 100 |
+| CE# high to output Hi-Z | tCHZ | — | 50 | — | 50 |
+| CE# high to ALE/CLE don’t care | tCSD | 10 | — | 10 | — |
+| CE# high to output hold | tCOH | 15 | — | 15 | — |
+| RE# high to output hold | tRHOH | 15 | — | 15 | — |
+| RE# low to output hold | tRLOH | 3 | — | 3 | — |
+| Output Hi-Z to RE# low | tIR | 0 | — | 0 | — |
+| CE# low to RE# low | tCR | 10 | — | 10 | — |
+| RE# high to WE# low | tRHW | 100 | — | 100 | — |
+| WE# high to RE# low | tWHR | 60 | — | 60 | — |
+| Write protect time | tWW | 100 | — | 100 | — |
 
-**对 K7 实现的约束**：FPGA 输出到 NAND 的走线延迟与翻转率须纳入 margin；若使用较高系统时钟分频产生 `WE#`/`RE#`，**周期计数须按手册 worst-case（最大 tRC/tWC 或最慢角）** 取值，并在仿真中与 NAND 模型核对。
+**对 K7 实现的约束**：**tWC、tRC** 取各自电压档 **Min** 作为最短合法周期；**tREA、tCEA、tWB、tRHZ、tCHZ** 等 **Max** 约束 FPGA **读采样时刻与三态窗口**；跨 **RE#→WE#**、**WE#→RE#** 切换须满足 **tRHW、tWHR**。手册 **§12.4 Note**：Typ 在 **Vcc=3.3 V、TA=25 ℃（3.3 V 器件）** 或 **Vcc=1.8 V、TA=25 ℃（1.8 V 器件）** 下测得。
 
-#### 4.1.3 阵列操作耗时（页编程与块擦除）
+#### 4.1.3 阵列操作耗时（§12.4 Performance Characteristics）
 
-| 参数 | 含义 | 典型需求（系列公开值，以手册 Max 为超时依据） |
-|------|------|-----------------------------------------------|
-| **tPROG** | 页编程时间（`10h` 等完成编程至 `R/B#` 就绪） | 公开资料常见 **Typ 300 μs，Max 700 μs**（页大小含备用区时仍以此类量级为参考）。控制器 **超时阈值须 ≥ 手册给出的 tPROG Max**，并保留系统裕量。 |
-| **tBERS** | 块擦除时间（擦除命令至 `R/B#` 就绪） | 公开资料常见 **Typ 3 ms，Max 10 ms**。控制器 **超时阈值须 ≥ 手册 tBERS Max**，并保留裕量。 |
+| Parameter | Symbol | Min | Typ | Max | Unit |
+|-----------|--------|-----|-----|-----|------|
+| Data transfer from cell to register | tR | — | — | 25 | μs |
+| Program time | tPROG | — | 300 | 700 | μs |
+| Read cache busy time | tCBSYR | — | 5 × tR | — | μs |
+| Cache program short busy time | tCBSYW | — | 5 | 700 | μs |
+| Number of partial program cycles in the same page | NOP | — | — | 4 | cycles |
+| Block erase time | tBERS | — | 3 | 10 | ms |
+| Device reset time (Read / Program / Erase) | tRST | — | 10 / 20 / 500 | — | μs |
 
-**忙态处理**：在发出会触发内部算法的命令后，须等待 **`R/B#` 变高** 或按手册通过 **读状态命令（如 `70h`）** 判断 **Ready**，禁止在忙期内发送非法总线序列。
+**忙态处理**：页读在 **30h** 后须等待阵列到寄存器传输完成（**tR**，**R/B#** 或状态）；页编程 **10h**、块擦除 **D0h** 后须等待 **tPROG / tBERS**（同上）。可配合 **读状态 70h** 判 Ready / Pass-Fail（见 §8 各图）。**tPROG、tBERS** 的 **Max** 为控制器**超时与看门狗**的设计下限。
 
-#### 4.1.4 操作流程级时序（命令序列，与波形对应）
+#### 4.1.3a 手册 §8 与波形相关的操作要点（与读写擦时序直接相关）
 
-以下为 **常用单平面操作** 的逻辑顺序（具体命令码与地址周期数以数据手册为准）；实现时每一步之间的 **总线周期** 须满足 4.1.2 节，**编程/擦除结束等待** 须满足 4.1.3 节。
+- **Common Page Read（00h–30h）**：手册规定与 **4 个地址周期** 及 **30h** 一起写入命令寄存器；上电后首次仅 **4 地址 + 30h** 亦可发起（§8.1.1）。选定页共 **2176 Byte** 进入数据寄存器后，由 **RE#** 以 **≥ tRC** 周期顺序读出。  
+- **Page Program（80h–10h）**、**Random Data Input（85h）**、**Cache Program（80h–15h）** 等：数据输入周期须满足 **§7.3** 与上表 **tWC、tDS、tDH**。  
+- **Block Erase（60h–D0h）**：行地址周期数见 **§5 / §8.3**（与 x8、寻址方案一致）。  
+- **WP#**：擦除/编程在 **WP#** 拉低时被禁止；手册 **§7.5** 给出 **tWW** 与编程/擦除命令边沿关系。
 
-**页读（典型：00h + 列地址 + 行地址 + 30h）**
+#### 4.1.4 操作流程级时序（命令序列，与 §8 波形对应）
+
+以下为手册 **§8** 描述的 **常用单平面操作** 逻辑顺序；实现时每一步之间的 **总线边沿** 须满足 **§4.1.2**，**阵列忙等待** 须满足 **§4.1.3**。
+
+**页读（Common Page Read：00h + 4 地址周期 + 30h，见 §8.1.1、图 13）**
 
 ```mermaid
 sequenceDiagram
     participant Host as K7 控制器
     participant NAND as GD9Fx1GxF2A
     Host->>NAND: 命令 00h（满足 tWC 等）
-    Host->>NAND: 列地址周期（1~2 个，依组织）
-    Host->>NAND: 行地址周期（若干周期）
+    Host->>NAND: 列地址 Col.Add1 / Col.Add2
+    Host->>NAND: 行地址 Row.Add1 / Row.Add2
     Host->>NAND: 命令 30h 启动读
-    NAND-->>NAND: 内部读阵列（tR 等，见手册）
+    NAND-->>NAND: 内部读阵列（tR，§12.4）
     NAND-->>Host: R/B# 就绪
     loop 每字节/字
         Host->>NAND: RE# 有效（周期 ≥ tRC）
@@ -197,20 +246,23 @@ sequenceDiagram
 ## 8. 待澄清项（需项目方与硬件工程师确认）
 
 1. **确切料号**：`GD9Fx1GxF2A` 中 `x` 与完整订货型号（封装 TSOP48 / FBGA 等）。  
-2. **页/块几何**：2K+64 还是 2K+128、每块页数、有效块数。  
-3. **ECC 方案**：位宽、算法（BCH 等）、在 FPGA 内还是 CPU 内实现。  
+2. **页/块几何**：本需求 **§3** 已与手册 **2K+128 Byte / 128K+8K Byte（x8）** 对齐；若 BOM 为 **x16（GD9Fx1G6F2A）** 或其它封装后缀，以手册 **§2.1 Product List、§5** 为准做一次核对并更新实现常量。  
+3. **ECC 方案**：手册要求 **4 bit / 512 bytes**（§1）；须明确在 FPGA 内 **BCH/汉明** 等实现或与软核分工。  
 4. **主机接口**：AXI、自定义总线或软核。  
 5. **性能指标**：连续读/写带宽、随机读延迟上限。  
 6. **是否首版即支持多平面/缓存模式/ONFi 参数页** 等高级特性。  
-7. **AC 表最终数值**：以锁定的 PDF 版本为准，将 **tRC、tWC、tPROG、tBERS** 及所有 **tXXX min/max** 填入本文件 4.1 节表格作为验收基线。
+7. **数据手册 Rev**：若升级 **DS-00798-*** 或封面 **Rev**，须对 **§12.3、§12.4、§8** 做勘误对照并更新本需求文档版本号。  
+8. **EDO 模式**：是否实现 **tRC < 30 ns** 的 EDO 读（§7.4）；默认可实现 **tRC ≥ 手册 Min** 的标准读。
 
 ---
 
 ## 9. 参考资料（外部）
 
-- 兆易创新官网 **Parallel NAND Flash** 产品页及 **GD9F** 系列数据手册下载。  
+- 兆易创新 **Parallel NAND Flash** 产品索引：<https://www.gigadevice.com.cn/product/flash/parallel-nand-flash>  
+- 同系列 **1 Gbit / 3 V / x8** 产品页（含数据手册条目 **DS-00798-GD9FU1G8F2D-Rev1.1**）：<https://www.gigadevice.com.cn/product/flash/parallel-nand-flash/gd9fu1g8f2d>  
+- 数据手册标题：**GD9Fx1GxF2A Datasheet**（与上述 **DS-00798-*** 为同一系列技术内容；**以下载 PDF 为准**）。  
 - Xilinx **Kintex-7** 数据手册、UG472 等 SelectIO 与时序相关文档（以实际 Vivado 版本为准）。  
-- ONFi 规范（若项目声明需严格 ONFi 认证，需明确版本号）。
+- **ONFI 1.0**（器件声明兼容版本，见手册 §1）。
 
 ---
 
@@ -220,3 +272,4 @@ sequenceDiagram
 |------|------|------|
 | 1.0 | 2026-04-29 | 初稿：记录需求与待澄清项 |
 | 1.1 | 2026-04-29 | 补充读/写总线时序（tRC、tWC 等）、页编程与块擦除耗时（tPROG、tBERS）及操作流程级时序说明与验证要求 |
+| 1.2 | 2026-04-29 | 按《GD9Fx1GxF2A》数据手册 §12.3/§12.4 填入完整 AC 与 Performance 表；§3、§4.1 与 §8/§1 对齐并补充官网手册引用 |
